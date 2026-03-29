@@ -33,6 +33,23 @@ WIB = timezone(timedelta(hours=7))
 
 
 def get_credentials():
+    # 1. Try environment variable (GitHub Actions)
+    token_env = os.environ.get("GOOGLE_TOKEN")
+    if token_env:
+        token_info = json.loads(token_env)
+        creds = Credentials(
+            token=token_info.get("token"),
+            refresh_token=token_info.get("refresh_token"),
+            token_uri=token_info.get("token_uri"),
+            client_id=token_info.get("client_id"),
+            client_secret=token_info.get("client_secret"),
+            scopes=token_info.get("scopes"),
+        )
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        return creds
+
+    # 2. Fall back to local token.json (interactive / local runs)
     creds = None
     if TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
@@ -40,7 +57,6 @@ def get_credentials():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            # Delete stale token if scopes changed
             if TOKEN_FILE.exists():
                 TOKEN_FILE.unlink()
             flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
@@ -154,6 +170,10 @@ def parse_amount(value):
 
 def get_or_create_sheet(sheets, drive):
     """Return spreadsheet ID, creating the sheet if it doesn't exist."""
+    # Check environment variable first (GitHub Actions)
+    if os.environ.get("GOOGLE_SHEET_ID"):
+        return os.environ["GOOGLE_SHEET_ID"]
+
     # Check if we have a saved sheet ID
     if SHEET_ID_FILE.exists():
         sheet_id = SHEET_ID_FILE.read_text().strip()
