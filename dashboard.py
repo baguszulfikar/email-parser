@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -143,6 +144,37 @@ filtered = df[df["Date"].dt.to_period("M") == selected_period].copy()
 if st.sidebar.button("🔄 Refresh data"):
     st.cache_data.clear()
     st.rerun()
+
+# ── Trigger GitHub Action ─────────────────────────────────────────────────────
+
+st.sidebar.divider()
+st.sidebar.subheader("Email Parser")
+
+if st.sidebar.button("▶ Run Parser Now"):
+    try:
+        gh = st.secrets.get("github", {})
+        token = gh.get("pat_token", "")
+        owner = gh.get("repo_owner", "")
+        repo = gh.get("repo_name", "")
+
+        if not all([token, owner, repo]):
+            st.sidebar.error("GitHub secrets not configured. Add github.pat_token, github.repo_owner, github.repo_name to Streamlit secrets.")
+        else:
+            response = requests.post(
+                f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/daily_parser.yml/dispatches",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json={"ref": "main"},
+            )
+            if response.status_code == 204:
+                st.sidebar.success("✅ Parser triggered! Check back in ~1 min then refresh data.")
+            else:
+                st.sidebar.error(f"Failed to trigger: {response.status_code} — {response.text}")
+    except Exception as e:
+        st.sidebar.error(f"Error: {e}")
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 
