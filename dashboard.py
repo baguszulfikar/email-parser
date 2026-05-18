@@ -304,7 +304,7 @@ if st.sidebar.button("▶ Parse Now"):
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab_monthly, tab_weekly = st.tabs(["📅 Monthly", "📆 Weekly"])
+tab_monthly, tab_weekly, tab_rec = st.tabs(["📅 Monthly", "📆 Weekly", "💡 Recommendations"])
 
 # ── Monthly tab ───────────────────────────────────────────────────────────────
 
@@ -351,3 +351,104 @@ with tab_weekly:
     ].copy()
 
     render_charts_and_table(filtered_week, selected_week_label, key_prefix="weekly")
+
+# ── Recommendations tab ───────────────────────────────────────────────────────
+
+with tab_rec:
+    st.subheader("💡 Weekly Spending Recommendations")
+
+    # Use the most recent full week in the data
+    all_week_starts = sorted(df["week_start"].unique(), reverse=True)
+    rec_week_start = all_week_starts[0] if all_week_starts else date.today() - timedelta(days=6)
+    rec_week_end = rec_week_start + timedelta(days=6)
+    rec_week_df = df[
+        (df["Date"].dt.date >= rec_week_start) &
+        (df["Date"].dt.date <= rec_week_end)
+    ].copy()
+
+    st.caption(f"Based on spending from **{rec_week_start.strftime('%d %b')} – {rec_week_end.strftime('%d %b %Y')}**")
+
+    if rec_week_df.empty:
+        st.info("No spending data available for the most recent week.")
+    else:
+        # Build spending summary for the prompt
+        total = rec_week_df["Amount (IDR)"].sum()
+        by_type = rec_week_df.groupby("Purpose/Type")["Amount (IDR)"].sum().sort_values(ascending=False)
+        by_source = rec_week_df.groupby("Source")["Amount (IDR)"].sum().sort_values(ascending=False)
+
+        breakdown_type = "\n".join(f"  - {t}: Rp {int(v):,}" for t, v in by_type.items())
+        breakdown_source = "\n".join(f"  - {s}: Rp {int(v):,}" for s, v in by_source.items())
+
+        # Previous week for comparison
+        prev_start = rec_week_start - timedelta(days=7)
+        prev_end = rec_week_start - timedelta(days=1)
+        prev_df = df[
+            (df["Date"].dt.date >= prev_start) &
+            (df["Date"].dt.date <= prev_end)
+        ]
+        prev_total = prev_df["Amount (IDR)"].sum()
+        prev_line = (
+            f"Previous week total: Rp {int(prev_total):,} "
+            f"({'▲' if total > prev_total else '▼'} {abs(total - prev_total) / max(prev_total, 1):.0%})"
+            if not prev_df.empty else "Previous week: no data"
+        )
+
+        spending_summary = f"""Week: {rec_week_start.strftime('%d %b')} – {rec_week_end.strftime('%d %b %Y')}
+Total spending: Rp {int(total):,}
+{prev_line}
+
+By category:
+{breakdown_type}
+
+By payment source:
+{breakdown_source}
+
+Number of transactions: {len(rec_week_df)}"""
+
+        if st.button("✨ Generate Recommendations", key="gen_rec"):
+            api_key = ""
+            try:
+                if "ANTHROPIC_API_KEY" in st.secrets:
+                    api_key = st.secrets["ANTHROPIC_API_KEY"]
+                elif "anthropic" in st.secrets:
+                    for k in ("api_key", "ANTHROPIC_API_KEY", "key", "token"):
+                        if k in st.secrets["anthropic"]:
+                            api_key = st.secrets["anthropic"][k]
+                            break
+            except Exception:
+                pass
+
+            if not api_key:
+                st.error("ANTHROPIC_API_KEY not found in Streamlit secrets.")
+            else:
+                with st.spinner("Analysing your spending..."):
+                    client = anthropic.Anthropic(api_key=api_key)
+                    response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=1024,
+                        messages=[{
+                            "role": "user",
+                            "content": f"""You are a personal finance advisor analysing weekly spending data for an Indonesian user.
+All amounts are in IDR (Indonesian Rupiah).
+
+Here is this week's spending summary:
+{spending_summary}
+
+Give 3–5 concise, practical, and friendly recommendations to help the user manage or reduce their spending.
+Focus on patterns you can see in the data. Be specific with numbers. Use bullet points.
+Write in a conversational tone. Keep it under 250 words.""",
+                        }],
+                    )
+                    st.markdown(response.content[0].text)
+
+        st.divider()
+        st.subheader("This week's transactions")
+        disp = rec_week_df.copy()
+        disp["Date"] = disp["Date"].dt.strftime("%Y-%m-%d")
+        disp["Amount (IDR)"] = disp["Amount (IDR)"].apply(format_idr)
+        disp = disp.sort_values(["Date", "Time"], ascending=[False, False]).reset_index(drop=True)
+        st.dataframe(
+            disp[["Date", "Time", "Source", "Purpose/Type", "Amount (IDR)", "Subject"]],
+            use_container_width=True,
+            hide_index=True,
+        )

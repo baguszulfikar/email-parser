@@ -155,7 +155,7 @@ Body:
 
 Return a JSON object with exactly these fields:
 - "source": one of "Mandiri", "GrabPay", "GoPay", "Grab", "Gojek", or "Unknown"
-- "purpose": a short English label for the transaction type, e.g. "Food purchase", "Ride-hailing", "Top-up", "Transfer", "Bill payment", "Subscription", "Withdrawal", "Cashback"
+- "purpose": classify into exactly one of: "QR Payment", "Ride-hailing", "Food purchase". Use "Other" if none fit.
 - "amount": transaction amount as a plain integer (e.g. 45000), no currency symbol or separators — use null if not found
 - "is_financial": true if this is a financial transaction notification, false otherwise
 
@@ -338,9 +338,10 @@ def run_parser(gmail, sheets, drive, client, start_date, log_fn=print):
             log_fn("    -> Skipped (not financial)")
             continue
 
-        purpose = (result.get("purpose") or "").lower()
-        if "top-up" in purpose or "topup" in purpose:
-            log_fn("    -> Skipped (top-up)")
+        purpose = (result.get("purpose") or "").strip()
+        allowed = {"QR Payment", "Ride-hailing", "Food purchase"}
+        if purpose not in allowed:
+            log_fn(f"    -> Skipped (purpose: {purpose or 'unknown'})")
             continue
 
         amount = parse_amount(result.get("amount"))
