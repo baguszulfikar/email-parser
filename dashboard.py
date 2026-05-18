@@ -123,7 +123,7 @@ def format_idr(value: float) -> str:
     return "Rp {:,.0f}".format(value).replace(",", ".")
 
 
-def render_charts_and_table(filtered, period_label):
+def render_charts_and_table(filtered, period_label, key_prefix=""):
     """Render KPIs, pie charts, and transaction table for a given filtered DataFrame."""
     total = filtered["Amount (IDR)"].sum()
     num_tx = len(filtered)
@@ -161,7 +161,7 @@ def render_charts_and_table(filtered, period_label):
             hovertemplate="<b>%{label}</b><br>Rp %{value:,.0f}<extra></extra>",
         )
         fig.update_layout(showlegend=True, margin=dict(t=20, b=20))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_by_type")
 
     with col2:
         st.subheader("By Source")
@@ -179,7 +179,7 @@ def render_charts_and_table(filtered, period_label):
             hovertemplate="<b>%{label}</b><br>Rp %{value:,.0f}<extra></extra>",
         )
         fig2.update_layout(showlegend=True, margin=dict(t=20, b=20))
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, use_container_width=True, key=f"{key_prefix}_by_source")
 
     st.divider()
 
@@ -265,7 +265,7 @@ with tab_monthly:
     selected_period = pd.Period(selected_month_str, freq="M")
     filtered_month = df[df["Date"].dt.to_period("M") == selected_period].copy()
 
-    render_charts_and_table(filtered_month, selected_month_str)
+    render_charts_and_table(filtered_month, selected_month_str, key_prefix="monthly")
 
 # ── Weekly tab ────────────────────────────────────────────────────────────────
 
@@ -295,4 +295,4 @@ with tab_weekly:
         (df["Date"].dt.date <= selected_week_end)
     ].copy()
 
-    render_charts_and_table(filtered_week, selected_week_label)
+    render_charts_and_table(filtered_week, selected_week_label, key_prefix="weekly")
