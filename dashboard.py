@@ -261,13 +261,14 @@ if st.sidebar.button("▶ Parse Now"):
         try:
             # Import parser functions (email_parser.py lives next to dashboard.py)
             sys.path.insert(0, str(BASE_DIR))
-            from email_parser import (  # noqa: E402
-                get_emails_since, classify_email, parse_amount,
-                get_or_create_sheet, remove_rows_since, append_rows,
-                run_parser,
-            )
+            from email_parser import run_parser  # noqa: E402
 
-            _log(f"Connecting to Google services...")
+            # Expose the sheet ID via env so get_or_create_sheet() can find it
+            # (it checks GOOGLE_SHEET_ID first, before falling back to sheet_id.txt)
+            import os
+            os.environ["GOOGLE_SHEET_ID"] = get_sheet_id()
+
+            _log("Connecting to Google services...")
             creds = get_credentials()
             gmail_svc = build("gmail", "v1", credentials=creds)
             sheets_svc = build("sheets", "v4", credentials=creds)
