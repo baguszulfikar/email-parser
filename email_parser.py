@@ -96,10 +96,10 @@ def extract_body(payload):
     return body
 
 
-def get_today_emails(gmail):
-    today_str = date.today().strftime("%Y/%m/%d")
-    query = SEARCH_QUERY_TEMPLATE.format(date=today_str)
-    result = gmail.users().messages().list(userId="me", q=query, maxResults=50).execute()
+def get_emails_since(gmail, since_date):
+    """Fetch all financial emails from since_date (inclusive) up to today."""
+    query = SEARCH_QUERY_TEMPLATE.format(date=since_date.strftime("%Y/%m/%d"))
+    result = gmail.users().messages().list(userId="me", q=query, maxResults=200).execute()
     messages = result.get("messages", [])
 
     emails = []
@@ -108,12 +108,14 @@ def get_today_emails(gmail):
         headers = {h["name"]: h["value"] for h in msg_data["payload"]["headers"]}
         body = extract_body(msg_data["payload"])
 
-        # Parse time from Date header, convert to WIB (UTC+7)
+        # Parse date and time from Date header, convert to WIB (UTC+7)
         time_str = ""
+        email_date = since_date  # fallback
         try:
             dt = parsedate_to_datetime(headers.get("Date", ""))
             dt_wib = dt.astimezone(WIB)
             time_str = dt_wib.strftime("%H:%M")
+            email_date = dt_wib.date()
         except Exception:
             pass
 
@@ -123,8 +125,13 @@ def get_today_emails(gmail):
             "sender": headers.get("From", ""),
             "body": body[:3000],
             "time": time_str,
+            "date": email_date,
         })
     return emails
+
+
+def get_today_emails(gmail):
+    return get_emails_since(gmail, date.today())
 
 
 def classify_email(client, email):
@@ -238,9 +245,9 @@ def get_or_create_sheet(sheets, drive):
     return sheet_id
 
 
-def remove_today_rows(sheets, sheet_id):
-    """Delete rows that already have today's date."""
-    today_str = date.today().strftime("%Y-%m-%d")
+def remove_rows_since(sheets, sheet_id, since_date):
+    """Delete all rows with date >= since_date (used before re-importing)."""
+    since_str = since_date.strftime("%Y-%m-%d")
 
     # Get actual grid ID
     meta = sheets.spreadsheets().get(spreadsheetId=sheet_id).execute()
@@ -253,7 +260,7 @@ def remove_today_rows(sheets, sheet_id):
 
     rows_to_delete = [
         i for i, row in enumerate(values)
-        if i > 0 and row and str(row[0]).startswith(today_str)
+        if i > 0 and row and str(row[0]) >= since_str
     ]
 
     if not rows_to_delete:
@@ -277,6 +284,11 @@ def remove_today_rows(sheets, sheet_id):
     return len(rows_to_delete)
 
 
+def remove_today_rows(sheets, sheet_id):
+    """Backward-compat alias: remove today's rows only."""
+    return remove_rows_since(sheets, sheet_id, date.today())
+
+
 def append_rows(sheets, sheet_id, rows):
     values = [
         [r["date"], r["time"], r["source"], r["purpose"], r["amount"], r["subject"]]
@@ -291,6 +303,59 @@ def append_rows(sheets, sheet_id, rows):
     ).execute()
 
 
+def run_parser(gmail, sheets, drive, client, start_date, log_fn=print):
+    """Parse emails from start_date to today and write results to the sheet.
+
+    Returns the number of rows written.
+    Can be called from external code (e.g. the Streamlit dashboard).
+    """
+    log_fn(f"Fetching emails since {start_date}...")
+    emails = get_emails_since(gmail, start_date)
+    log_fn(f"Found {len(emails)} candidate email(s)")
+
+    if not emails:
+        log_fn("No matching emails found.")
+        return 0
+
+    rows = []
+    for email in emails:
+        log_fn(f"  Classifying: {email['subject'][:60]}...")
+        result = classify_email(client, email)
+
+        if not result.get("is_financial", True):
+            log_fn("    -> Skipped (not financial)")
+            continue
+
+        purpose = (result.get("purpose") or "").lower()
+        if "top-up" in purpose or "topup" in purpose:
+            log_fn("    -> Skipped (top-up)")
+            continue
+
+        amount = parse_amount(result.get("amount"))
+        rows.append({
+            "date": email["date"].strftime("%Y-%m-%d"),
+            "time": email.get("time", ""),
+            "source": result.get("source", "Unknown"),
+            "purpose": result.get("purpose", "Unknown"),
+            "amount": amount,
+            "subject": email["subject"],
+        })
+        log_fn(f"    -> {result.get('source')} | {result.get('purpose')} | {amount}")
+
+    if not rows:
+        log_fn("No financial transactions to record.")
+        return 0
+
+    log_fn("Updating Google Sheet...")
+    sheet_id = get_or_create_sheet(sheets, drive)
+    removed = remove_rows_since(sheets, sheet_id, start_date)
+    if removed:
+        log_fn(f"  Replaced {removed} existing row(s) from {start_date} onwards")
+    append_rows(sheets, sheet_id, rows)
+    log_fn(f"Done. {len(rows)} row(s) written.")
+    return len(rows)
+
+
 def main():
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -302,52 +367,9 @@ def main():
 
     print("Connecting to Google services...")
     gmail, sheets, drive = get_services()
-
-    print(f"Fetching today's financial emails ({date.today()})...")
-    emails = get_today_emails(gmail)
-    print(f"Found {len(emails)} candidate email(s)")
-
-    if not emails:
-        print("No matching emails found for today.")
-        return
-
     client = anthropic.Anthropic(api_key=api_key)
-    rows = []
 
-    for email in emails:
-        print(f"  Classifying: {email['subject'][:60]}...")
-        result = classify_email(client, email)
-
-        if not result.get("is_financial", True):
-            print("    -> Skipped (not a financial notification)")
-            continue
-
-        if "top-up" in (result.get("purpose") or "").lower() or "topup" in (result.get("purpose") or "").lower():
-            print("    -> Skipped (top-up)")
-            continue
-
-        amount = parse_amount(result.get("amount"))
-        rows.append({
-            "date": date.today().strftime("%Y-%m-%d"),
-            "time": email.get("time", ""),
-            "source": result.get("source", "Unknown"),
-            "purpose": result.get("purpose", "Unknown"),
-            "amount": amount,
-            "subject": email["subject"],
-        })
-        print(f"    -> {result.get('source')} | {result.get('purpose')} | {amount}")
-
-    if not rows:
-        print("No financial transactions to record.")
-        return
-
-    print("\nUpdating Google Sheet...")
-    sheet_id = get_or_create_sheet(sheets, drive)
-    removed = remove_today_rows(sheets, sheet_id)
-    if removed:
-        print(f"  Replaced {removed} existing row(s) for today")
-    append_rows(sheets, sheet_id, rows)
-    print(f"Done. {len(rows)} row(s) written to: https://docs.google.com/spreadsheets/d/{sheet_id}")
+    run_parser(gmail, sheets, drive, client, date.today())
 
 
 if __name__ == "__main__":
