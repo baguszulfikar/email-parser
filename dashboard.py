@@ -1,10 +1,11 @@
 import json
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+import anthropic
 import pandas as pd
 import plotly.express as px
-import requests
 import streamlit as st
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -222,30 +223,59 @@ if st.sidebar.button("🔄 Refresh data"):
 st.sidebar.divider()
 st.sidebar.subheader("Email Parser")
 
-if st.sidebar.button("▶ Run Parser Now"):
-    try:
-        gh = st.secrets.get("github", {})
-        token = gh.get("pat_token", "")
-        owner = gh.get("repo_owner", "")
-        repo = gh.get("repo_name", "")
-        if not all([token, owner, repo]):
-            st.sidebar.error("GitHub secrets not configured.")
-        else:
-            response = requests.post(
-                f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/daily_parser.yml/dispatches",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                json={"ref": "main"},
+if st.sidebar.button("▶ Parse Now"):
+    # Determine start date: last date in the sheet, or today if sheet is empty
+    if df.empty:
+        start_date = date.today()
+    else:
+        start_date = df["Date"].max().date()
+
+    # Get Anthropic API key from secrets or env
+    api_key = (
+        st.secrets.get("ANTHROPIC_API_KEY")
+        or st.secrets.get("anthropic", {}).get("api_key", "")
+    )
+    if not api_key:
+        st.sidebar.error("ANTHROPIC_API_KEY not found in Streamlit secrets.")
+    else:
+        log_box = st.sidebar.empty()
+        logs: list[str] = []
+
+        def _log(msg: str):
+            logs.append(msg)
+            log_box.code("\n".join(logs), language=None)
+
+        try:
+            # Import parser functions (email_parser.py lives next to dashboard.py)
+            sys.path.insert(0, str(BASE_DIR))
+            from email_parser import (  # noqa: E402
+                get_emails_since, classify_email, parse_amount,
+                get_or_create_sheet, remove_rows_since, append_rows,
+                run_parser,
             )
-            if response.status_code == 204:
-                st.sidebar.success("✅ Parser triggered! Refresh data in ~1 min.")
+
+            _log(f"Connecting to Google services...")
+            creds = get_credentials()
+            gmail_svc = build("gmail", "v1", credentials=creds)
+            sheets_svc = build("sheets", "v4", credentials=creds)
+            drive_svc = build("drive", "v3", credentials=creds)
+            client = anthropic.Anthropic(api_key=api_key)
+
+            _log(f"Parsing emails since {start_date}...")
+            count = run_parser(
+                gmail_svc, sheets_svc, drive_svc, client,
+                start_date, log_fn=_log,
+            )
+
+            if count > 0:
+                st.sidebar.success(f"✅ {count} row(s) added from {start_date}.")
+                st.cache_data.clear()
+                st.rerun()
             else:
-                st.sidebar.error(f"Failed: {response.status_code} — {response.text}")
-    except Exception as e:
-        st.sidebar.error(f"Error: {e}")
+                st.sidebar.info(f"ℹ️ No new transactions found since {start_date}.")
+        except Exception as e:
+            st.sidebar.error(f"Parser error: {e}")
+            st.sidebar.exception(e)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
