@@ -235,17 +235,17 @@ if st.sidebar.button("▶ Parse Now"):
     try:
         if "ANTHROPIC_API_KEY" in st.secrets:
             api_key = st.secrets["ANTHROPIC_API_KEY"]
-        elif "anthropic" in st.secrets and "api_key" in st.secrets["anthropic"]:
-            api_key = st.secrets["anthropic"]["api_key"]
+        elif "anthropic" in st.secrets:
+            section = st.secrets["anthropic"]
+            for key in ("api_key", "ANTHROPIC_API_KEY", "key", "token"):
+                if key in section:
+                    api_key = section[key]
+                    break
     except Exception:
         pass
 
     if not api_key:
-        available = list(st.secrets.keys())
-        st.sidebar.error(
-            f"ANTHROPIC_API_KEY not found. Keys currently in secrets: `{available}`\n\n"
-            "Add a top-level entry: `ANTHROPIC_API_KEY = \"sk-ant-...\"`"
-        )
+        st.sidebar.error("ANTHROPIC_API_KEY not found in Streamlit secrets.")
     else:
         log_box = st.sidebar.empty()
         logs: list[str] = []
