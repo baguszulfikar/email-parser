@@ -38,8 +38,10 @@ def check_password():
 
 def get_credentials():
     token_file = BASE_DIR / "token.json"
+    from_secrets = False
     if "google" in st.secrets and "token" in st.secrets["google"]:
         token_info = json.loads(st.secrets["google"]["token"])
+        from_secrets = True
     elif token_file.exists():
         token_info = json.loads(token_file.read_text())
     else:
@@ -55,7 +57,23 @@ def get_credentials():
         scopes=token_info.get("scopes"),
     )
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except Exception as e:
+            st.error(
+                "Google token refresh failed. Re-run `email_parser.py` locally to get a new token, "
+                "then update `google.token` in Streamlit secrets."
+            )
+            st.exception(e)
+            st.stop()
+        # Persist the refreshed token so the next restart doesn't need to refresh again.
+        token_file.write_text(creds.to_json())
+        if from_secrets:
+            with st.sidebar.expander("⚠️ Token refreshed — update Streamlit secrets", expanded=True):
+                st.caption(
+                    "Copy the value below and paste it into `google.token` in your Streamlit secrets."
+                )
+                st.code(creds.to_json(), language="json")
     return creds
 
 
