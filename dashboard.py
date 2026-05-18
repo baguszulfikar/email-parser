@@ -220,6 +220,17 @@ if st.sidebar.button("🔄 Refresh data"):
     st.cache_data.clear()
     st.rerun()
 
+all_types = sorted(df["Purpose/Type"].dropna().unique().tolist())
+selected_types = st.sidebar.multiselect(
+    "Purpose/Type",
+    options=all_types,
+    default=all_types,
+    placeholder="Select types...",
+)
+# Apply filter to the full dataframe so both tabs are affected
+if selected_types:
+    df = df[df["Purpose/Type"].isin(selected_types)]
+
 st.sidebar.divider()
 st.sidebar.subheader("Email Parser")
 

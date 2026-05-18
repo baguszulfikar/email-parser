@@ -99,8 +99,19 @@ def extract_body(payload):
 def get_emails_since(gmail, since_date):
     """Fetch all financial emails from since_date (inclusive) up to today."""
     query = SEARCH_QUERY_TEMPLATE.format(date=since_date.strftime("%Y/%m/%d"))
-    result = gmail.users().messages().list(userId="me", q=query, maxResults=200).execute()
-    messages = result.get("messages", [])
+
+    # Paginate through all results — Gmail returns newest first, 100 per page
+    messages = []
+    page_token = None
+    while True:
+        kwargs = {"userId": "me", "q": query, "maxResults": 100}
+        if page_token:
+            kwargs["pageToken"] = page_token
+        result = gmail.users().messages().list(**kwargs).execute()
+        messages.extend(result.get("messages", []))
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
 
     emails = []
     for msg in messages:
@@ -319,7 +330,8 @@ def run_parser(gmail, sheets, drive, client, start_date, log_fn=print):
 
     rows = []
     for email in emails:
-        log_fn(f"  Classifying: {email['subject'][:60]}...")
+        email_date = email["date"]
+        log_fn(f"  [{email_date}] {email['subject'][:55]}...")
         result = classify_email(client, email)
 
         if not result.get("is_financial", True):
@@ -333,14 +345,14 @@ def run_parser(gmail, sheets, drive, client, start_date, log_fn=print):
 
         amount = parse_amount(result.get("amount"))
         rows.append({
-            "date": email["date"].strftime("%Y-%m-%d"),
+            "date": email_date.strftime("%Y-%m-%d"),
             "time": email.get("time", ""),
             "source": result.get("source", "Unknown"),
             "purpose": result.get("purpose", "Unknown"),
             "amount": amount,
             "subject": email["subject"],
         })
-        log_fn(f"    -> {result.get('source')} | {result.get('purpose')} | {amount}")
+        log_fn(f"    -> ✓ {result.get('source')} | {result.get('purpose')} | {amount}")
 
     if not rows:
         log_fn("No financial transactions to record.")
