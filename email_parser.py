@@ -326,71 +326,75 @@ def append_rows(sheets, sheet_id, rows):
     ).execute()
 
 
-def run_parser(gmail, sheets, drive, client, start_date, log_fn=print):
+def run_parser(gmail, sheets, drive, client, start_date, log_fn=print, progress_fn=None):
     """Parse emails from start_date to today and write results to the sheet.
 
+    log_fn(msg)            — called for high-level status messages
+    progress_fn(done, total) — called after each email is classified (optional)
+
     Returns the number of rows written.
-    Can be called from external code (e.g. the Streamlit dashboard).
     """
     log_fn(f"Fetching emails since {start_date}...")
     emails = get_emails_since(gmail, start_date)
-    log_fn(f"Found {len(emails)} candidate email(s)")
+    log_fn(f"Found {len(emails)} email(s). Classifying...")
 
     if not emails:
         log_fn("No matching emails found.")
         return 0
 
-    log_fn(f"Classifying {len(emails)} email(s) in parallel...")
-
     def classify_one(email):
         return email, classify_email(client, email)
 
     classified = []
+    done = 0
+    total = len(emails)
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(classify_one, e): e for e in emails}
         for future in as_completed(futures):
+            done += 1
+            if progress_fn:
+                progress_fn(done, total)
+            else:
+                pct = int(done / total * 100)
+                print(f"\r  Classifying... {pct}% ({done}/{total})", end="", flush=True)
             try:
                 classified.append(future.result())
             except Exception as exc:
-                email = futures[future]
-                log_fn(f"  [{email['date']}] Error classifying: {exc}")
+                log_fn(f"  Error on one email: {exc}")
 
-    # Sort results back into date order (as_completed returns in arbitrary order)
+    if not progress_fn:
+        print()  # newline after inline progress
+
+    # Sort results back into date order
     classified.sort(key=lambda t: (t[0]["date"], t[0]["time"]), reverse=True)
 
     allowed = {"QR Payment", "Ride-hailing", "Food purchase"}
     rows = []
     for email, result in classified:
-        email_date = email["date"]
         if not result.get("is_financial", True):
-            log_fn(f"  [{email_date}] {email['subject'][:45]} -> Skipped (not financial)")
             continue
-
         purpose = (result.get("purpose") or "").strip()
         if purpose not in allowed:
-            log_fn(f"  [{email_date}] {email['subject'][:45]} -> Skipped ({purpose or 'unknown'})")
             continue
-
         amount = parse_amount(result.get("amount"))
         rows.append({
-            "date": email_date.strftime("%Y-%m-%d"),
+            "date": email["date"].strftime("%Y-%m-%d"),
             "time": email.get("time", ""),
             "source": result.get("source", "Unknown"),
             "purpose": purpose,
             "amount": amount,
             "subject": email["subject"],
         })
-        log_fn(f"  [{email_date}] ✓ {result.get('source')} | {purpose} | {amount}")
 
     if not rows:
         log_fn("No financial transactions to record.")
         return 0
 
-    log_fn("Updating Google Sheet...")
+    log_fn(f"Writing {len(rows)} transaction(s) to sheet...")
     sheet_id = get_or_create_sheet(sheets, drive)
     removed = remove_rows_since(sheets, sheet_id, start_date)
     if removed:
-        log_fn(f"  Replaced {removed} existing row(s) from {start_date} onwards")
+        log_fn(f"Replaced {removed} existing row(s) from {start_date} onwards.")
     append_rows(sheets, sheet_id, rows)
     log_fn(f"Done. {len(rows)} row(s) written.")
     return len(rows)
