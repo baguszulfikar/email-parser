@@ -262,20 +262,20 @@ if st.sidebar.button("▶ Parse Now"):
     if not api_key:
         st.sidebar.error("ANTHROPIC_API_KEY not found in Streamlit secrets.")
     else:
-        log_box = st.sidebar.empty()
-        logs: list[str] = []
+        status_msg = st.sidebar.empty()
+        progress_bar = st.sidebar.progress(0)
 
         def _log(msg: str):
-            logs.append(msg)
-            log_box.code("\n".join(logs), language=None)
+            status_msg.caption(msg)
+
+        def _progress(done: int, total: int):
+            pct = int(done / total * 100)
+            progress_bar.progress(pct, text=f"Classifying... {pct}% ({done}/{total})")
 
         try:
-            # Import parser functions (email_parser.py lives next to dashboard.py)
             sys.path.insert(0, str(BASE_DIR))
             from email_parser import run_parser  # noqa: E402
 
-            # Expose the sheet ID via env so get_or_create_sheet() can find it
-            # (it checks GOOGLE_SHEET_ID first, before falling back to sheet_id.txt)
             import os
             os.environ["GOOGLE_SHEET_ID"] = get_sheet_id()
 
@@ -286,19 +286,22 @@ if st.sidebar.button("▶ Parse Now"):
             drive_svc = build("drive", "v3", credentials=creds)
             client = anthropic.Anthropic(api_key=api_key)
 
-            _log(f"Parsing emails since {start_date}...")
             count = run_parser(
                 gmail_svc, sheets_svc, drive_svc, client,
-                start_date, log_fn=_log,
+                start_date, log_fn=_log, progress_fn=_progress,
             )
 
+            progress_bar.empty()
             if count > 0:
-                st.sidebar.success(f"✅ {count} row(s) added from {start_date}.")
+                status_msg.empty()
+                st.sidebar.success(f"✅ {count} transaction(s) added from {start_date}.")
                 st.cache_data.clear()
                 st.rerun()
             else:
+                status_msg.empty()
                 st.sidebar.info(f"ℹ️ No new transactions found since {start_date}.")
         except Exception as e:
+            progress_bar.empty()
             st.sidebar.error(f"Parser error: {e}")
             st.sidebar.exception(e)
 

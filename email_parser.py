@@ -2,6 +2,7 @@ import os
 import json
 import base64
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -113,13 +114,11 @@ def get_emails_since(gmail, since_date):
         if not page_token:
             break
 
-    emails = []
-    for msg in messages:
+    def fetch_one(msg):
         msg_data = gmail.users().messages().get(userId="me", id=msg["id"], format="full").execute()
         headers = {h["name"]: h["value"] for h in msg_data["payload"]["headers"]}
         body = extract_body(msg_data["payload"])
 
-        # Parse date and time from Date header, convert to WIB (UTC+7)
         time_str = ""
         email_date = since_date  # fallback
         try:
@@ -130,14 +129,27 @@ def get_emails_since(gmail, since_date):
         except Exception:
             pass
 
-        emails.append({
+        return {
             "id": msg["id"],
             "subject": headers.get("Subject", "(no subject)"),
             "sender": headers.get("From", ""),
             "body": body[:3000],
             "time": time_str,
             "date": email_date,
-        })
+        }
+
+    # Fetch all email bodies in parallel (I/O-bound — safe with threads)
+    emails = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_one, msg): msg for msg in messages}
+        for future in as_completed(futures):
+            try:
+                emails.append(future.result())
+            except Exception:
+                pass  # skip any message that fails to fetch
+
+    # Sort by date descending to keep a consistent order
+    emails.sort(key=lambda e: (e["date"], e["time"]), reverse=True)
     return emails
 
 
@@ -314,56 +326,75 @@ def append_rows(sheets, sheet_id, rows):
     ).execute()
 
 
-def run_parser(gmail, sheets, drive, client, start_date, log_fn=print):
+def run_parser(gmail, sheets, drive, client, start_date, log_fn=print, progress_fn=None):
     """Parse emails from start_date to today and write results to the sheet.
 
+    log_fn(msg)            — called for high-level status messages
+    progress_fn(done, total) — called after each email is classified (optional)
+
     Returns the number of rows written.
-    Can be called from external code (e.g. the Streamlit dashboard).
     """
     log_fn(f"Fetching emails since {start_date}...")
     emails = get_emails_since(gmail, start_date)
-    log_fn(f"Found {len(emails)} candidate email(s)")
+    log_fn(f"Found {len(emails)} email(s). Classifying...")
 
     if not emails:
         log_fn("No matching emails found.")
         return 0
 
+    def classify_one(email):
+        return email, classify_email(client, email)
+
+    classified = []
+    done = 0
+    total = len(emails)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(classify_one, e): e for e in emails}
+        for future in as_completed(futures):
+            done += 1
+            if progress_fn:
+                progress_fn(done, total)
+            else:
+                pct = int(done / total * 100)
+                print(f"\r  Classifying... {pct}% ({done}/{total})", end="", flush=True)
+            try:
+                classified.append(future.result())
+            except Exception as exc:
+                log_fn(f"  Error on one email: {exc}")
+
+    if not progress_fn:
+        print()  # newline after inline progress
+
+    # Sort results back into date order
+    classified.sort(key=lambda t: (t[0]["date"], t[0]["time"]), reverse=True)
+
+    allowed = {"QR Payment", "Ride-hailing", "Food purchase"}
     rows = []
-    for email in emails:
-        email_date = email["date"]
-        log_fn(f"  [{email_date}] {email['subject'][:55]}...")
-        result = classify_email(client, email)
-
+    for email, result in classified:
         if not result.get("is_financial", True):
-            log_fn("    -> Skipped (not financial)")
             continue
-
         purpose = (result.get("purpose") or "").strip()
-        allowed = {"QR Payment", "Ride-hailing", "Food purchase"}
         if purpose not in allowed:
-            log_fn(f"    -> Skipped (purpose: {purpose or 'unknown'})")
             continue
-
         amount = parse_amount(result.get("amount"))
         rows.append({
-            "date": email_date.strftime("%Y-%m-%d"),
+            "date": email["date"].strftime("%Y-%m-%d"),
             "time": email.get("time", ""),
             "source": result.get("source", "Unknown"),
-            "purpose": result.get("purpose", "Unknown"),
+            "purpose": purpose,
             "amount": amount,
             "subject": email["subject"],
         })
-        log_fn(f"    -> ✓ {result.get('source')} | {result.get('purpose')} | {amount}")
 
     if not rows:
         log_fn("No financial transactions to record.")
         return 0
 
-    log_fn("Updating Google Sheet...")
+    log_fn(f"Writing {len(rows)} transaction(s) to sheet...")
     sheet_id = get_or_create_sheet(sheets, drive)
     removed = remove_rows_since(sheets, sheet_id, start_date)
     if removed:
-        log_fn(f"  Replaced {removed} existing row(s) from {start_date} onwards")
+        log_fn(f"Replaced {removed} existing row(s) from {start_date} onwards.")
     append_rows(sheets, sheet_id, rows)
     log_fn(f"Done. {len(rows)} row(s) written.")
     return len(rows)
