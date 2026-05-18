@@ -114,41 +114,37 @@ def get_emails_since(gmail, since_date):
         if not page_token:
             break
 
-    def fetch_one(msg):
-        msg_data = gmail.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-        headers = {h["name"]: h["value"] for h in msg_data["payload"]["headers"]}
-        body = extract_body(msg_data["payload"])
-
-        time_str = ""
-        email_date = since_date  # fallback
-        try:
-            dt = parsedate_to_datetime(headers.get("Date", ""))
-            dt_wib = dt.astimezone(WIB)
-            time_str = dt_wib.strftime("%H:%M")
-            email_date = dt_wib.date()
-        except Exception:
-            pass
-
-        return {
-            "id": msg["id"],
-            "subject": headers.get("Subject", "(no subject)"),
-            "sender": headers.get("From", ""),
-            "body": body[:3000],
-            "time": time_str,
-            "date": email_date,
-        }
-
-    # Fetch all email bodies in parallel (I/O-bound — safe with threads)
+    # Fetch email bodies sequentially — the Gmail API client is not thread-safe
     emails = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_one, msg): msg for msg in messages}
-        for future in as_completed(futures):
-            try:
-                emails.append(future.result())
-            except Exception:
-                pass  # skip any message that fails to fetch
+    for msg in messages:
+        try:
+            msg_data = gmail.users().messages().get(
+                userId="me", id=msg["id"], format="full"
+            ).execute()
+            headers = {h["name"]: h["value"] for h in msg_data["payload"]["headers"]}
+            body = extract_body(msg_data["payload"])
 
-    # Sort by date descending to keep a consistent order
+            time_str = ""
+            email_date = since_date  # fallback
+            try:
+                dt = parsedate_to_datetime(headers.get("Date", ""))
+                dt_wib = dt.astimezone(WIB)
+                time_str = dt_wib.strftime("%H:%M")
+                email_date = dt_wib.date()
+            except Exception:
+                pass
+
+            emails.append({
+                "id": msg["id"],
+                "subject": headers.get("Subject", "(no subject)"),
+                "sender": headers.get("From", ""),
+                "body": body[:3000],
+                "time": time_str,
+                "date": email_date,
+            })
+        except Exception:
+            pass  # skip any message that fails to fetch
+
     emails.sort(key=lambda e: (e["date"], e["time"]), reverse=True)
     return emails
 
