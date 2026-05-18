@@ -230,13 +230,18 @@ if st.sidebar.button("▶ Parse Now"):
     else:
         start_date = df["Date"].max().date()
 
-    # Get Anthropic API key from secrets or env
-    api_key = (
-        st.secrets.get("ANTHROPIC_API_KEY")
-        or st.secrets.get("anthropic", {}).get("api_key", "")
-    )
+    # Get Anthropic API key — try common secret layouts
+    api_key = ""
+    if "ANTHROPIC_API_KEY" in st.secrets:
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    elif "anthropic" in st.secrets and "api_key" in st.secrets["anthropic"]:
+        api_key = st.secrets["anthropic"]["api_key"]
+
     if not api_key:
-        st.sidebar.error("ANTHROPIC_API_KEY not found in Streamlit secrets.")
+        st.sidebar.error(
+            "ANTHROPIC_API_KEY not found in Streamlit secrets. "
+            "Add it as a top-level key: ANTHROPIC_API_KEY = \"sk-ant-...\""
+        )
     else:
         log_box = st.sidebar.empty()
         logs: list[str] = []
