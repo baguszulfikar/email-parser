@@ -2,6 +2,7 @@ import os
 import json
 import base64
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timezone, timedelta
 from email.utils import parsedate_to_datetime
@@ -169,19 +170,27 @@ Return a JSON object with exactly these fields:
 
 Return only the JSON, no explanation, no markdown."""
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=256,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = response.content[0].text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-        return {"source": "Unknown", "purpose": "Unknown", "amount": None, "is_financial": False}
+    for attempt in range(4):
+        try:
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=256,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.content[0].text.strip()
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                match = re.search(r"\{.*\}", text, re.DOTALL)
+                if match:
+                    return json.loads(match.group())
+                return {"source": "Unknown", "purpose": "Other", "amount": None, "is_financial": False}
+        except Exception as e:
+            if "429" in str(e) and attempt < 3:
+                wait = 15 * (attempt + 1)  # 15s, 30s, 45s
+                time.sleep(wait)
+            else:
+                raise
 
 
 def parse_amount(value):
@@ -344,7 +353,7 @@ def run_parser(gmail, sheets, drive, client, start_date, log_fn=print, progress_
     classified = []
     done = 0
     total = len(emails)
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(classify_one, e): e for e in emails}
         for future in as_completed(futures):
             done += 1
