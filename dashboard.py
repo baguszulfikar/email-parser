@@ -223,12 +223,16 @@ if st.sidebar.button("🔄 Refresh data"):
 st.sidebar.divider()
 st.sidebar.subheader("Email Parser")
 
+default_start = df["Date"].max().date() if not df.empty else date.today()
+parse_from = st.sidebar.date_input(
+    "Parse emails from",
+    value=default_start,
+    max_value=date.today(),
+    help="Emails from this date up to today will be fetched and added to the sheet.",
+)
+
 if st.sidebar.button("▶ Parse Now"):
-    # Determine start date: last date in the sheet, or today if sheet is empty
-    if df.empty:
-        start_date = date.today()
-    else:
-        start_date = df["Date"].max().date()
+    start_date = parse_from
 
     # Get Anthropic API key — try common secret layouts
     api_key = ""
